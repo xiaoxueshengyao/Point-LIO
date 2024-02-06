@@ -415,25 +415,210 @@ void h_model_IMU_output(state_output &s, esekfom::dyn_share_modified<double> &ek
 	}
 }
 
-void h_model_rtk_pose(state_output& s, esekfom::dyn_share_modified<double>& ekfom_data)
+void h_model_rtk_pose(state_output &s, esekfom::dyn_share_modified<double> &ekfom_data)
 {
-	V3D G_p_gps;
-	M3D M_ecef2enu;
-	
-	// rtk原始数据转到enu
-	ConvertLLAToENU(init_lla,new_rtk_lla,&G_p_gps,&M_ecef2enu);
 
-	ekfom_data.h_x = Eigen::MatrixXd::Zero(3,6);
+	// if (effect_num_k == 0) 
+	// {
+	// 	ekfom_data.valid = false;
+	// 	return;
+	// }
+
+
+	ekfom_data.Cov = now_gnss_data_->position_covariance;
+	(ekfom_data.Cov)(2, 2) = now_gnss_data_->position_covariance(2, 2) * 4000;
+
+	Eigen::Vector3d G_p_Gps;
+	Eigen::Matrix3d M_ecef2enu;
+	PositionAndMatrixFromGeoLib(final_init_lla_, now_gnss_data_->lla, &G_p_Gps, &M_ecef2enu);
+
+
+	ekfom_data.h_x = Eigen::MatrixXd::Zero(3, 6);
 	ekfom_data.z.resize(3);
 
-	Eigen::Matrix3d G_R_I(s.rot.conjugate().normalized());
+	Eigen::Matrix3d G_R_I(s.rot.conjugate().normalized())  ;
 	Eigen::Vector3d G_p_I;
 	G_p_I << VEC_FROM_ARRAY(s.pos);
 
-	// 用观测减去预测作为 误差状态
-	ekfom_data.h_x.block<3,3>(0,0) = Eigen::Matrix3d::Identity();
-	efkom_data.h_x.block<3,3>(0,3) = -G_R_I * hat(I_p_Gps_);
-	ekfom_data.z = G_p_gps - (G_p_I + G_R_I * I_p_Gps_);
+
+	// std::cout<<" ! ex_rotation : "<<ex_rotation<<std::endl;
+
+
+	double yaw_rad = ex_rotation*kDegreeToRadian;
+	// Eigen::Matrix3d Rig = Eigen::Matrix3d::Identity();
+	// Rig(0, 0) *= cos(yaw_rad);
+	// Rig(1, 1) *= cos(yaw_rad);
+	// Rig(0, 1) = sin(yaw_rad);
+	// Rig(1, 0) = -sin(yaw_rad);
+	Eigen::Matrix3d Rig = Eigen::AngleAxisd(yaw_rad,Eigen::Vector3d::UnitZ()).matrix();
+
+
+
+
+	ekfom_data.h_x.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+    // ekfom_data.h_x.block<3, 3>(0, 3) = -hat(G_R_I * I_p_Gps_);
+	ekfom_data.h_x.block<3, 3>(0, 3) = -G_R_I * hat(I_p_Gps_);
+
+	// rkt观测 - 当前状态  作为误差状态
+	ekfom_data.z = G_p_Gps - (G_p_I + G_R_I * I_p_Gps_);
+
+
+	// cout<<" G_p_Gps "<<(Rig*G_p_Gps)[0]<<" "<<(Rig*G_p_Gps)[1] <<" "<<(Rig*G_p_Gps)[2]  <<endl;
+	// cout<<" G_p_I "<<G_p_I[0]<<" "<<G_p_I[1] <<" "<<G_p_I[2]  <<endl;
+
+	// cout<<" (G_p_I + G_R_I * I_p_Gps_s "<<(G_p_I + G_R_I * I_p_Gps_)[0]<<" "<<(G_p_I + G_R_I * I_p_Gps_)[1] <<" "<<(G_p_I + G_R_I * I_p_Gps_)[2]  <<endl;
+
+	// cout<<" ekfom_data.z "<<ekfom_data.z[0]<<" "<<ekfom_data.z[1] <<" "<<ekfom_data.z[2]  <<endl;
+
+}
+
+
+
+void h_model_rtk_rot(state_output &s, esekfom::dyn_share_modified<double> &ekfom_data)
+{
+
+	// if (effect_num_k == 0) 
+	// {
+	// 	ekfom_data.valid = false;
+	// 	return;
+	// }
+
+	ekfom_data.M_Noise = now_gnss_data_->heading_covariance * (kDegreeToRadian * kDegreeToRadian);
+	ekfom_data.h_x = Eigen::MatrixXd::Zero(1, 6);
+	ekfom_data.z.resize(1);
+
+	Eigen::Matrix3d G_R_I(s.rot.conjugate().normalized())  ;
+	// Eigen::Vector3d G_p_I;
+	// G_p_I << VEC_FROM_ARRAY(s.pos);
+
+	// Eigen::Vector3d G_p_Gps;
+	// Eigen::Matrix3d M_ecef2enu;
+	// PositionAndMatrixFromGeoLib(final_init_lla_, now_gnss_data_->lla, &G_p_Gps, &M_ecef2enu);
+
+	double phi = now_gnss_data_->heading ;
+
+
+	double yaw_residual = phi - atan2(-G_R_I(0, 1), G_R_I(1, 1));
+	if (yaw_residual > M_PI) {
+		yaw_residual -= 2 * M_PI;
+	} else if (yaw_residual < -M_PI) {
+		yaw_residual += 2 * M_PI;
+	}
+
+	// cout<<" yaw_residual: "<<yaw_residual<<" , phi "<< phi<<" ,fileter yaw :"<<atan2(-G_R_I(0, 1), G_R_I(1, 1))<<endl;
+
+	// 四元数求导
+	Eigen::Matrix<double, 1, 3> jacob;
+	Eigen::Quaterniond q(G_R_I);
+	double qr = q.w() * q.w() - q.x() * q.x() + q.y() * q.y() - q.z() * q.z();
+	double qt = 2 * q.w() * q.z() - 2 * q.x() * q.y();
+
+	Eigen::Matrix<double, 1, 4> heading_alpha_q;
+	heading_alpha_q << (2 * q.z() * qr - 2 * q.w() * qt) / (qr * qr + qt * qt),
+			-(2 * q.y() * qr - 2 * q.x() * qt) / (qr * qr + qt * qt),
+			-(2 * q.x() * qr + 2 * q.y() * qt) / (qr * qr + qt * qt),
+			(2 * q.w() * qr + 2 * q.z() * qt) / (qr * qr + qt * qt);
+
+	Eigen::Matrix<double, 4, 3> q_alpha_dtheta;
+	Eigen::Vector3d qv(q.x(), q.y(), q.z());
+	q_alpha_dtheta.block<1, 3>(0, 0) = -qv.transpose();
+	q_alpha_dtheta.block<3, 3>(1, 0) = q.w() * Eigen::Matrix3d::Identity() + hat(qv);
+	q_alpha_dtheta = 0.5 * q_alpha_dtheta;
+
+	jacob = heading_alpha_q * q_alpha_dtheta;
+
+	jacob.block<1, 2>(0, 0) = Eigen::Vector2d::Zero();
+	ekfom_data.h_x.block<1, 3>(0, 3) = jacob;
+	ekfom_data.z(0,0) = yaw_residual;
+
+	return;
+}
+
+
+
+
+
+void h_model_rtk_rot_pos(state_output &s, esekfom::dyn_share_modified<double> &ekfom_data)
+{
+
+	// if (effect_num_k == 0) 
+	// {
+	// 	ekfom_data.valid = false;
+	// 	return;
+	// }
+
+
+	ekfom_data.Cov = now_gnss_data_->position_covariance ;
+	(ekfom_data.Cov)(2, 2) = now_gnss_data_->position_covariance(2, 2) * 100;
+	ekfom_data.M_Noise = now_gnss_data_->heading_covariance * (kDegreeToRadian * kDegreeToRadian);
+
+	ekfom_data.h_x = Eigen::MatrixXd::Zero(4, 6);
+	ekfom_data.z.resize(4);
+
+	Eigen::Matrix3d G_R_I(s.rot.conjugate().normalized())  ;
+	Eigen::Vector3d G_p_I;
+	G_p_I << VEC_FROM_ARRAY(s.pos);
+
+
+
+	Eigen::Vector3d G_p_Gps;
+	Eigen::Matrix3d M_ecef2enu;
+	PositionAndMatrixFromGeoLib(final_init_lla_, now_gnss_data_->lla, &G_p_Gps, &M_ecef2enu);
+
+
+
+	// double phi = now_gnss_data_->heading + ex_rotation;
+	double phi = now_gnss_data_->heading ;
+
+	double yaw_residual = phi - atan2(-G_R_I(0, 1), G_R_I(1, 1));
+	if (yaw_residual > M_PI) {
+		yaw_residual -= 2 * M_PI;
+	} else if (yaw_residual < -M_PI) {
+		yaw_residual += 2 * M_PI;
+	}
+
+
+	Eigen::Matrix<double, 1, 3> jacob;
+	Eigen::Quaterniond q(G_R_I);
+	double qr = q.w() * q.w() - q.x() * q.x() + q.y() * q.y() - q.z() * q.z();
+	double qt = 2 * q.w() * q.z() - 2 * q.x() * q.y();
+
+	Eigen::Matrix<double, 1, 4> heading_alpha_q;
+	heading_alpha_q << (2 * q.z() * qr - 2 * q.w() * qt) / (qr * qr + qt * qt),
+			-(2 * q.y() * qr - 2 * q.x() * qt) / (qr * qr + qt * qt),
+			-(2 * q.x() * qr + 2 * q.y() * qt) / (qr * qr + qt * qt),
+			(2 * q.w() * qr + 2 * q.z() * qt) / (qr * qr + qt * qt);
+
+
+	Eigen::Matrix<double, 4, 3> q_alpha_dtheta;
+	Eigen::Vector3d qv(q.x(), q.y(), q.z());
+	q_alpha_dtheta.block<1, 3>(0, 0) = -qv.transpose();
+	q_alpha_dtheta.block<3, 3>(1, 0) = q.w() * Eigen::Matrix3d::Identity() + hat(qv);
+	q_alpha_dtheta = 0.5 * q_alpha_dtheta;
+
+	jacob = heading_alpha_q * q_alpha_dtheta;
+
+	jacob.block<1, 2>(0, 0) = Eigen::Vector2d::Zero();
+	ekfom_data.h_x.block<1, 3>(3, 3) = jacob;
+	ekfom_data.z(3,0) = yaw_residual;
+
+
+
+	double yaw_rad = ex_rotation*kDegreeToRadian;
+	Eigen::Matrix3d Rig = Eigen::Matrix3d::Identity();
+	Rig(0, 0) *= cos(yaw_rad);
+	Rig(1, 1) *= cos(yaw_rad);
+	Rig(0, 1) = sin(yaw_rad);
+	Rig(1, 0) = -sin(yaw_rad);
+
+
+	ekfom_data.h_x.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+    // ekfom_data.h_x.block<3, 3>(0, 3) = -hat(G_R_I * I_p_Gps_);
+    ekfom_data.h_x.block<3, 3>(0, 3) = -G_R_I * hat(I_p_Gps_);
+
+	ekfom_data.z.block<3, 1>(0, 0) = Rig*G_p_Gps - (G_p_I + G_R_I * I_p_Gps_);
+
+
 
 }
 

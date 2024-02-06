@@ -112,7 +112,8 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
 void h_model_IMU_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_data);
 
 void h_model_rtk_pose(state_output& s, esekfom::dyn_share_modified<double>& ekfom_data);
-
+void h_model_rtk_rot_pos(state_output &s, esekfom::dyn_share_modified<double> &ekfom_data);
+void h_model_rtk_rot(state_output &s, esekfom::dyn_share_modified<double> &ekfom_data);
 void pointBodyToWorld(PointType const * const pi, PointType * const po);
 
 const bool time_list(PointType &x, PointType &y); // {return (x.curvature < y.curvature);};

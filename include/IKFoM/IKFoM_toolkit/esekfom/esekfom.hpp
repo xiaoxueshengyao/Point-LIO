@@ -130,6 +130,48 @@ public:
 		x_.build_SEN_state();
 	}
 
+	// 用于融合lidar、imu、rtk
+	void init_dyn_share_modified_4h(processModel f_in, processMatrix1 f_x_in, measurementModel_dyn_share_modified h_dyn_share_in1,
+		measurementModel_dyn_share_modified h_dyn_share_in2,measurementModel_dyn_share_modified h_dyn_share_in3,measurementModel_dyn_share_modified h_dyn_share_in4)
+	{
+		f = f_in;
+		f_x = f_x_in;
+		// f_w = f_w_in;
+		h_dyn_share_modified_1 = h_dyn_share_in1;
+		h_dyn_share_modified_2 = h_dyn_share_in2;
+		h_dyn_share_modified_3 = h_dyn_share_in3;
+		h_dyn_share_modified_4 = h_dyn_share_in4;
+
+		// TODO ,迭代次数为1？
+		maximum_iter = 1;
+		x_.build_S2_state();
+		x_.build_SO3_state();
+		x_.build_vect_state();
+		x_.build_SEN_state();
+
+	}
+
+
+	// 用于融合lidar、imu、rtk
+	void init_dyn_share_modified_3h(processModel f_in, processMatrix1 f_x_in, measurementModel_dyn_share_modified h_dyn_share_in1,
+		measurementModel_dyn_share_modified h_dyn_share_in2,measurementModel_dyn_share_modified h_dyn_share_in3)
+	{
+		f = f_in;
+		f_x = f_x_in;
+		// f_w = f_w_in;
+		h_dyn_share_modified_1 = h_dyn_share_in1;
+		h_dyn_share_modified_2 = h_dyn_share_in2;
+		h_dyn_share_modified_3 = h_dyn_share_in3;
+
+		// TODO ,迭代次数为1？
+		maximum_iter = 1;
+		x_.build_S2_state();
+		x_.build_SO3_state();
+		x_.build_vect_state();
+		x_.build_SEN_state();
+
+	}
+
 	// iterated error state EKF propogation
 	void predict(double &dt, processnoisecovariance &Q, const input &i_in, bool predict_state, bool prop_cov){
 		if (predict_state)
@@ -327,14 +369,212 @@ public:
 				}
 				HPHT(l_, l_) += dyn_share.R_IMU(l_); //, l);
 			}
-        	Eigen::Matrix<double, 30, 6> K = PHT * HPHT.inverse(); 
-                                    
-            Matrix<scalar_type, n, 1> dx_ = K * z; 
+			Eigen::Matrix<double, 30, 6> K = PHT * HPHT.inverse(); 
+																
+				Matrix<scalar_type, n, 1> dx_ = K * z; 
 
-            P_ -= K * HP;
+				P_ -= K * HP;
 			x_.boxplus(dx_);
 		}
 		return;
+	}
+
+	bool update_iterated_dyn_share_rot_rtk(){
+
+		// std::cout<<" update_iterated_dyn_share_rot_rtk "<<std::endl;
+
+		dyn_share_modified<scalar_type> dyn_share;
+		state x_propagated = x_;
+		int dof_Measurement; 
+		double m_noise;
+		for(int i=0; i<maximum_iter; i++)
+		{
+			dyn_share.valid = true;
+			h_dyn_share_modified_4(x_, dyn_share);
+			if(! dyn_share.valid)
+			{
+				return false;
+				// continue;
+			}
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> z = dyn_share.z;
+			// Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> R = dyn_share.R; 
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x = dyn_share.h_x;
+			// Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_v = dyn_share.h_v;
+			dof_Measurement = h_x.rows();
+			m_noise = dyn_share.M_Noise;
+
+
+			Matrix<scalar_type, n, Eigen::Dynamic> PHT;//30 3  
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> HPHT;//3 3
+			Matrix<scalar_type, n, Eigen::Dynamic> K_;//30 3
+			// if(n > dof_Measurement)
+			{
+				PHT = P_. template block<n, 6>(0, 0) * h_x.transpose();
+				HPHT = h_x * PHT.topRows(6);
+
+				// TODO 尚未使用论文里提到的公式
+				// K_= P_ * h_x_.transpose() * (h_x_ * P_ * h_x_.transpose() + h_v_ * R * h_v_.transpose()).inverse();
+				for (int m = 0; m < dof_Measurement; m++)
+				{
+					HPHT(m, m) += m_noise;
+				}
+				K_= PHT*HPHT.inverse();
+
+
+			}
+			//计算状态变量的更新量
+			Matrix<scalar_type, n, 1> dx_ = K_ * z; // - h) + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new; 
+
+			// std::cout<<" dx_ "<<dx_.transpose()<<std::endl;
+			safe_deltax(dx_);
+
+			//将状态变量和更新量相加，得到更新后的状态变量
+			x_.boxplus(dx_);
+			dyn_share.converge = true;
+			
+			//更新协方差矩阵
+			{
+				P_ = P_ - K_*h_x*P_. template block<6, n>(0, 0);
+			}
+		}
+		return true;
+
+
+	}
+
+
+
+	bool update_iterated_dyn_share_rot_pose_rtk(){
+
+		// std::cout<<" update_iterated_dyn_share_rot_pose_rtk "<<std::endl;
+
+		dyn_share_modified<scalar_type> dyn_share;
+		state x_propagated = x_;
+		int dof_Measurement; 
+		double m_noise;
+		for(int i=0; i<maximum_iter; i++)
+		{
+			dyn_share.valid = true;
+			h_dyn_share_modified_3(x_, dyn_share);
+			if(! dyn_share.valid)
+			{
+				return false;
+				// continue;
+			}
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> z = dyn_share.z;
+			// Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> R = dyn_share.R; 
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x = dyn_share.h_x;
+			// Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_v = dyn_share.h_v;
+			dof_Measurement = h_x.rows();
+			m_noise = dyn_share.M_Noise;
+
+
+			Matrix<scalar_type, n, Eigen::Dynamic> PHT;//30 3  
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> HPHT;//3 3
+			Matrix<scalar_type, n, Eigen::Dynamic> K_;//30 3
+			// if(n > dof_Measurement)
+			{
+				PHT = P_. template block<n, 6>(0, 0) * h_x.transpose();
+				HPHT = h_x * PHT.topRows(6);
+
+				// TODO 尚未使用论文里提到的公式
+				// K_= P_ * h_x_.transpose() * (h_x_ * P_ * h_x_.transpose() + h_v_ * R * h_v_.transpose()).inverse();
+				Eigen::Matrix<double, 4, 4> V;
+				(V).block<3, 3>(0, 0) = dyn_share.Cov;
+				(V)(3, 3) = dyn_share.M_Noise;
+				K_= PHT * (HPHT + V).inverse();
+
+			}
+			//计算状态变量的更新量
+			Matrix<scalar_type, n, 1> dx_ = K_ * z; // - h) + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new; 
+
+			// std::cout<<" dx_ "<<dx_.transpose()<<std::endl;
+			safe_deltax(dx_);
+
+			//将状态变量和更新量相加，得到更新后的状态变量
+			x_.boxplus(dx_);
+			dyn_share.converge = true;
+			
+			//更新协方差矩阵
+			{
+				P_ = P_ - K_*h_x*P_. template block<6, n>(0, 0);
+			}
+		}
+		return true;
+	}
+
+
+
+	// 更新
+	bool update_iterated_dyn_share_rtk() {
+
+		// std::cout<<" update_iterated_dyn_share_rtk "<<std::endl;
+
+		dyn_share_modified<scalar_type> dyn_share;
+		state x_propagated = x_;
+		int dof_Measurement; 
+		double m_noise;
+		for(int i=0; i<maximum_iter; i++)
+		{
+			dyn_share.valid = true;
+			h_dyn_share_modified_3(x_, dyn_share);
+			if(! dyn_share.valid)
+			{
+				return false;
+				// continue;
+			}
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> z = dyn_share.z;
+			// Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> R = dyn_share.R; 
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_x = dyn_share.h_x;
+			// Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> h_v = dyn_share.h_v;
+			dof_Measurement = h_x.rows();
+			m_noise = dyn_share.M_Noise;
+			// dof_Measurement_noise = dyn_share.R.rows();
+			// vectorized_state dx, dx_new;
+			// x_.boxminus(dx, x_propagated);
+			// dx_new = dx;
+			// P_ = P_propagated;
+
+			Matrix<scalar_type, n, Eigen::Dynamic> PHT;//30 3  
+			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> HPHT;//3 3
+			Matrix<scalar_type, n, Eigen::Dynamic> K_;//30 3
+			// if(n > dof_Measurement)
+			{
+				PHT = P_. template block<n, 6>(0, 0) * h_x.transpose();
+				HPHT = h_x * PHT.topRows(6);
+				// for (int m = 0; m < dof_Measurement; m++)
+				// {
+				// 	HPHT(m, m) += 0.2;
+				// }
+
+				// K_= PHT*HPHT.inverse();
+
+				// TODO 尚未使用论文里提到的公式
+				// K_= P_ * h_x_.transpose() * (h_x_ * P_ * h_x_.transpose() + h_v_ * R * h_v_.transpose()).inverse();
+				K_= PHT * (HPHT + dyn_share.Cov).inverse();
+
+
+			}
+			//计算状态变量的更新量
+			Matrix<scalar_type, n, 1> dx_ = K_ * z; // - h) + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new; 
+			// state x_before = x_;
+
+			// std::cout<<" dx_ "<<dx_.transpose()<<std::endl;
+
+			safe_deltax(dx_);
+
+			// std::cout<<" safe_deltax "<<dx_.transpose()<<std::endl;
+
+			//将状态变量和更新量相加，得到更新后的状态变量
+			x_.boxplus(dx_);
+			dyn_share.converge = true;
+			
+			//更新协方差矩阵
+			{
+				P_ = P_ - K_*h_x*P_. template block<6, n>(0, 0);
+			}
+		}
+		return true;
 	}
 	
 	void change_x(state &input_state)
@@ -385,6 +625,8 @@ private:
 	measurementModel_dyn_share_modified *h_dyn_share_modified_1;
 
 	measurementModel_dyn_share_modified *h_dyn_share_modified_2;
+	measurementModel_dyn_share_modified *h_dyn_share_modified_3;
+	measurementModel_dyn_share_modified *h_dyn_share_modified_4;
 
 	int maximum_iter = 0;
 	scalar_type limit[n];
