@@ -415,6 +415,29 @@ void h_model_IMU_output(state_output &s, esekfom::dyn_share_modified<double> &ek
 	}
 }
 
+void h_model_rtk_pose(state_output& s, esekfom::dyn_share_modified<double>& ekfom_data)
+{
+	V3D G_p_gps;
+	M3D M_ecef2enu;
+	
+	// rtk原始数据转到enu
+	ConvertLLAToENU(init_lla,new_rtk_lla,&G_p_gps,&M_ecef2enu);
+
+	ekfom_data.h_x = Eigen::MatrixXd::Zero(3,6);
+	ekfom_data.z.resize(3);
+
+	Eigen::Matrix3d G_R_I(s.rot.conjugate().normalized());
+	Eigen::Vector3d G_p_I;
+	G_p_I << VEC_FROM_ARRAY(s.pos);
+
+	// 用观测减去预测作为 误差状态
+	ekfom_data.h_x.block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+	efkom_data.h_x.block<3,3>(0,3) = -G_R_I * hat(I_p_Gps_);
+	ekfom_data.z = G_p_gps - (G_p_I + G_R_I * I_p_Gps_);
+
+}
+
+
 void pointBodyToWorld(PointType const * const pi, PointType * const po)
 {    
     V3D p_body(pi->x, pi->y, pi->z);
